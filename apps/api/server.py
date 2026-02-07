@@ -7,12 +7,79 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
 
 DB_PATH = 'data/advocera.db'
+PRACTICE_AREAS = {'personal_injury', 'civil_rights', 'employment_law', 'family_law'}
+ATTORNEY_STATUSES = {'active', 'inactive', 'suspended'}
+MAX_LIMIT = 100
 
 
 def _decode_json(text, fallback):
     if text in (None, ''):
         return fallback
     return json.loads(text)
+
+
+def _first(params, key, default=None):
+    return params.get(key, [default])[0]
+
+
+def _validate_attorney_query(params):
+    errors = []
+
+    state = _first(params, 'state', 'IA')
+    practice_area = _first(params, 'practice_area')
+    city = _first(params, 'city')
+    status = _first(params, 'status')
+    limit_raw = _first(params, 'limit', '25')
+    offset_raw = _first(params, 'offset', '0')
+
+    if state != 'IA':
+        errors.append({
+            'field': 'state',
+            'message': "Only 'IA' is currently supported in this prototype.",
+        })
+
+    if practice_area and practice_area not in PRACTICE_AREAS:
+        errors.append({
+            'field': 'practice_area',
+            'message': f'Unsupported practice_area. Allowed: {sorted(PRACTICE_AREAS)}',
+        })
+
+    if status and status not in ATTORNEY_STATUSES:
+        errors.append({
+            'field': 'status',
+            'message': f'Unsupported status. Allowed: {sorted(ATTORNEY_STATUSES)}',
+        })
+
+    try:
+        limit = int(limit_raw)
+        if limit < 1 or limit > MAX_LIMIT:
+            raise ValueError()
+    except (TypeError, ValueError):
+        errors.append({
+            'field': 'limit',
+            'message': f'limit must be an integer between 1 and {MAX_LIMIT}.',
+        })
+        limit = 25
+
+    try:
+        offset = int(offset_raw)
+        if offset < 0:
+            raise ValueError()
+    except (TypeError, ValueError):
+        errors.append({
+            'field': 'offset',
+            'message': 'offset must be an integer greater than or equal to 0.',
+        })
+        offset = 0
+
+    return errors, {
+        'state': state,
+        'practice_area': practice_area,
+        'city': city,
+        'status': status,
+        'limit': limit,
+        'offset': offset,
+    }
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -36,10 +103,16 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         params = parse_qs(parsed.query)
-        state = params.get('state', ['IA'])[0]
-        practice_area = params.get('practice_area', [None])[0]
-        city = params.get('city', [None])[0]
-        status = params.get('status', [None])[0]
+        errors, q = _validate_attorney_query(params)
+        if errors:
+            self._json(
+                422,
+                {
+                    'error': 'validation_error',
+                    'field_errors': errors,
+                },
+            )
+            return
 
         sql = '''
         SELECT
@@ -51,14 +124,14 @@ class Handler(BaseHTTPRequestHandler):
         FROM lm_attorneys
         WHERE state = ?
         '''
-        args = [state]
+        args = [q['state']]
 
-        if city:
+        if q['city']:
             sql += ' AND city = ?'
-            args.append(city)
-        if status:
+            args.append(q['city'])
+        if q['status']:
             sql += ' AND status = ?'
-            args.append(status)
+            args.append(q['status'])
         sql += ' ORDER BY full_name'
 
         conn = sqlite3.connect(DB_PATH)
@@ -68,7 +141,7 @@ class Handler(BaseHTTPRequestHandler):
         data = []
         for row in rows:
             practice_areas = _decode_json(row['practice_areas_json'], [])
-            if practice_area and practice_area not in practice_areas:
+            if q['practice_area'] and q['practice_area'] not in practice_areas:
                 continue
 
             attorney = {
@@ -126,8 +199,20 @@ class Handler(BaseHTTPRequestHandler):
 
             data.append(attorney)
 
+        total = len(data)
+        paged = data[q['offset']:q['offset'] + q['limit']]
         conn.close()
-        self._json(200, {'data': data})
+        self._json(
+            200,
+            {
+                'data': paged,
+                'meta': {
+                    'total': total,
+                    'limit': q['limit'],
+                    'offset': q['offset'],
+                },
+            },
+        )
 
 
 def main():

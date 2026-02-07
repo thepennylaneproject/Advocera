@@ -55,18 +55,32 @@ paths:
           schema:
             type: string
             enum: [active, inactive, suspended]
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+        - in: query
+          name: offset
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
       responses:
         '200':
           description: Attorney list
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Attorney'
+                $ref: '#/components/schemas/AttorneyListResponse'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorResponse'
   /intakes/{intakeId}/matches:
     get:
       tags: [Matching]
@@ -485,3 +499,42 @@ components:
         updated_draft:
           type: object
           additionalProperties: true
+    AttorneyListResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Attorney'
+        meta:
+          type: object
+          required: [total, limit, offset]
+          properties:
+            total:
+              type: integer
+              minimum: 0
+            limit:
+              type: integer
+              minimum: 1
+              maximum: 100
+            offset:
+              type: integer
+              minimum: 0
+    ValidationErrorResponse:
+      type: object
+      required: [error, field_errors]
+      properties:
+        error:
+          type: string
+          enum: [validation_error]
+        field_errors:
+          type: array
+          items:
+            type: object
+            required: [field, message]
+            properties:
+              field:
+                type: string
+              message:
+                type: string
