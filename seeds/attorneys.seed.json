@@ -1,0 +1,119 @@
+[
+  {
+    "id": "3c5a2e4d-2ed0-4e33-a3a8-9ecdb3e61f40",
+    "state": "IA",
+    "full_name": "Alex Morgan",
+    "bar_number": "AT0001",
+    "city": "Des Moines",
+    "status": "active",
+    "admission_year": 2012,
+    "years_in_practice": 14,
+    "practice_areas": ["personal_injury", "civil_rights"],
+    "firm_name": "Morgan Injury & Civil Rights",
+    "firm_url": "https://example.com/morgan-law",
+    "office_address": "100 Court Ave, Des Moines, IA",
+    "counties_served": ["Polk", "Dallas"],
+    "languages": ["English", "Spanish"],
+    "free_consultation": true,
+    "contingency_fee_noted": true,
+    "peer_recognitions": ["Super Lawyers 2025"],
+    "source_profile_url": "https://example.com/morgan-law/alex-morgan",
+    "source_evidence": [
+      {
+        "source_type": "iowa_opr",
+        "source_url": "https://example.com/iowa-opr/alex-morgan",
+        "captured_at": "2026-02-07T10:00:00Z",
+        "excerpt": "Status: Active",
+        "confidence": 1.0
+      },
+      {
+        "source_type": "firm_site",
+        "source_url": "https://example.com/morgan-law/contact",
+        "captured_at": "2026-02-07T10:05:00Z",
+        "excerpt": "Free consultation available",
+        "confidence": 0.9
+      }
+    ],
+    "discipline_records": [
+      {
+        "has_public_action": false,
+        "sanction_type": "none",
+        "summary": "No public disciplinary action found in current checks.",
+        "source_url": "https://example.com/iowa-disciplinary-search/alex-morgan"
+      }
+    ],
+    "risk_flags": [],
+    "trauma_accessibility": {
+      "empathy_language_present": true,
+      "vulnerable_groups_mentioned": true,
+      "ada_accessibility_statement": true,
+      "virtual_consultations_offered": true,
+      "interpreter_or_multilingual_access": true,
+      "trauma_informed_claim_explicit": false,
+      "notes": "Mentions emotional harm and low-friction intake support."
+    },
+    "intake_friction": {
+      "primary_contact_channel": "form",
+      "form_required_field_count": 6,
+      "requires_detailed_medical_history": false,
+      "requires_detailed_employment_history": false,
+      "allows_minimal_first_touch": true
+    },
+    "last_verified_at": "2026-02-07T10:10:00Z"
+  },
+  {
+    "id": "809ea63f-6f6e-4ad0-a5b8-bb732f67c803",
+    "state": "IA",
+    "full_name": "Jordan Lee",
+    "bar_number": "AT0002",
+    "city": "Iowa City",
+    "status": "active",
+    "admission_year": 2008,
+    "years_in_practice": 18,
+    "practice_areas": ["employment_law"],
+    "firm_name": "Lee Employment Counsel",
+    "firm_url": "https://example.com/lee-employment",
+    "office_address": "50 Clinton St, Iowa City, IA",
+    "counties_served": ["Johnson", "Linn"],
+    "languages": ["English"],
+    "free_consultation": false,
+    "contingency_fee_noted": false,
+    "peer_recognitions": ["Best Lawyers 2024"],
+    "source_profile_url": "https://example.com/lee-employment/jordan-lee",
+    "source_evidence": [
+      {
+        "source_type": "iowa_opr",
+        "source_url": "https://example.com/iowa-opr/jordan-lee",
+        "captured_at": "2026-02-07T11:00:00Z",
+        "excerpt": "Status: Active",
+        "confidence": 1.0
+      }
+    ],
+    "discipline_records": [
+      {
+        "has_public_action": false,
+        "sanction_type": "none",
+        "summary": "No public disciplinary action found in current checks.",
+        "source_url": "https://example.com/iowa-disciplinary-search/jordan-lee"
+      }
+    ],
+    "risk_flags": ["verification_stale_soon"],
+    "trauma_accessibility": {
+      "empathy_language_present": true,
+      "vulnerable_groups_mentioned": false,
+      "ada_accessibility_statement": false,
+      "virtual_consultations_offered": true,
+      "interpreter_or_multilingual_access": false,
+      "trauma_informed_claim_explicit": false,
+      "notes": "Provides plain-language process guide for clients."
+    },
+    "intake_friction": {
+      "primary_contact_channel": "phone",
+      "form_required_field_count": 0,
+      "requires_detailed_medical_history": false,
+      "requires_detailed_employment_history": false,
+      "allows_minimal_first_touch": true
+    },
+    "last_verified_at": "2026-02-07T11:05:00Z"
+  }
+]

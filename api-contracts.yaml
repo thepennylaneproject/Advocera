@@ -1,0 +1,487 @@
+openapi: 3.0.3
+info:
+  title: Legal Match HITL API
+  version: 0.1.0
+  description: Sprint 1 API contracts for Iowa legal representation matching.
+servers:
+  - url: /v1
+tags:
+  - name: Intake
+  - name: Attorneys
+  - name: Matching
+  - name: Operator
+paths:
+  /intakes:
+    post:
+      tags: [Intake]
+      summary: Create a new intake
+      operationId: createIntake
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateIntakeRequest'
+      responses:
+        '201':
+          description: Intake created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Intake'
+        '422':
+          description: Validation error
+  /attorneys:
+    get:
+      tags: [Attorneys]
+      summary: List attorneys
+      operationId: listAttorneys
+      parameters:
+        - in: query
+          name: state
+          schema:
+            type: string
+            default: IA
+        - in: query
+          name: practice_area
+          schema:
+            $ref: '#/components/schemas/PracticeArea'
+        - in: query
+          name: city
+          schema:
+            type: string
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [active, inactive, suspended]
+      responses:
+        '200':
+          description: Attorney list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Attorney'
+  /intakes/{intakeId}/matches:
+    get:
+      tags: [Matching]
+      summary: Get ranked matches for intake
+      operationId: getIntakeMatches
+      parameters:
+        - in: path
+          name: intakeId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Ranked matches
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Match'
+  /intakes/{intakeId}/drafts:
+    post:
+      tags: [Operator]
+      summary: Generate outreach drafts for intake matches
+      operationId: generateDrafts
+      parameters:
+        - in: path
+          name: intakeId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '201':
+          description: Drafts generated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/OutreachDraft'
+        '409':
+          description: Consent missing or intake not eligible
+  /operator/review-tasks:
+    get:
+      tags: [Operator]
+      summary: List pending review tasks
+      operationId: listReviewTasks
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [pending, in_review, approved, changes_requested, rejected]
+            default: pending
+      responses:
+        '200':
+          description: Review queue
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ReviewTask'
+  /operator/review-tasks/{taskId}/claim:
+    post:
+      tags: [Operator]
+      summary: Claim a review task
+      operationId: claimReviewTask
+      parameters:
+        - in: path
+          name: taskId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Task claimed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewTask'
+  /operator/review-tasks/{taskId}/decision:
+    post:
+      tags: [Operator]
+      summary: Submit review decision
+      operationId: decideReviewTask
+      parameters:
+        - in: path
+          name: taskId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviewDecisionRequest'
+      responses:
+        '200':
+          description: Decision recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewTask'
+components:
+  schemas:
+    PracticeArea:
+      type: string
+      enum: [personal_injury, civil_rights, employment_law, family_law]
+    CreateIntakeRequest:
+      type: object
+      required: [state, practice_areas, zip_code, urgency, summary, consent_at]
+      properties:
+        state:
+          type: string
+          enum: [IA]
+        practice_areas:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/PracticeArea'
+        zip_code:
+          type: string
+        city:
+          type: string
+        language_pref:
+          type: string
+        urgency:
+          type: string
+          enum: [low, medium, high]
+        budget_max_usd:
+          type: integer
+          minimum: 0
+        summary:
+          type: string
+          minLength: 20
+        contact:
+          type: object
+          required: [full_name, email]
+          properties:
+            full_name:
+              type: string
+            email:
+              type: string
+              format: email
+            phone:
+              type: string
+        consent_at:
+          type: string
+          format: date-time
+    Intake:
+      type: object
+      required: [id, state, practice_areas, status, consent_at, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        state:
+          type: string
+        practice_areas:
+          type: array
+          items:
+            $ref: '#/components/schemas/PracticeArea'
+        zip_code:
+          type: string
+        city:
+          type: string
+        urgency:
+          type: string
+        summary:
+          type: string
+        status:
+          type: string
+          enum: [new, matched, draft_pending_review, in_review, ready_for_submit, closed]
+        consent_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+    Attorney:
+      type: object
+      required: [id, state, full_name, status, practice_areas]
+      properties:
+        id:
+          type: string
+          format: uuid
+        state:
+          type: string
+        full_name:
+          type: string
+        bar_number:
+          type: string
+        city:
+          type: string
+        status:
+          type: string
+          enum: [active, inactive, suspended]
+        admission_year:
+          type: integer
+          minimum: 1900
+        years_in_practice:
+          type: integer
+          minimum: 0
+        practice_areas:
+          type: array
+          items:
+            $ref: '#/components/schemas/PracticeArea'
+        firm_name:
+          type: string
+        firm_url:
+          type: string
+          format: uri
+        office_address:
+          type: string
+        counties_served:
+          type: array
+          items:
+            type: string
+        languages:
+          type: array
+          items:
+            type: string
+        free_consultation:
+          type: boolean
+        contingency_fee_noted:
+          type: boolean
+        peer_recognitions:
+          type: array
+          items:
+            type: string
+        source_profile_url:
+          type: string
+          format: uri
+        source_evidence:
+          type: array
+          items:
+            $ref: '#/components/schemas/SourceEvidence'
+        discipline_records:
+          type: array
+          items:
+            $ref: '#/components/schemas/DisciplineRecord'
+        risk_flags:
+          type: array
+          items:
+            type: string
+        trauma_accessibility:
+          $ref: '#/components/schemas/TraumaAccessibilityIndicators'
+        intake_friction:
+          $ref: '#/components/schemas/IntakeFriction'
+        last_verified_at:
+          type: string
+          format: date-time
+    SourceEvidence:
+      type: object
+      required: [source_type, source_url, captured_at]
+      properties:
+        source_type:
+          type: string
+          enum: [iowa_opr, iowa_bar_find_a_lawyer, iowa_courts_online, discipline_decision, firm_site, directory]
+        source_url:
+          type: string
+          format: uri
+        captured_at:
+          type: string
+          format: date-time
+        excerpt:
+          type: string
+        confidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+    DisciplineRecord:
+      type: object
+      required: [source_url, has_public_action]
+      properties:
+        has_public_action:
+          type: boolean
+        sanction_type:
+          type: string
+          enum: [none, public_reprimand, administrative_suspension, disciplinary_suspension, revocation, other]
+        decision_date:
+          type: string
+          format: date
+        citation:
+          type: string
+        summary:
+          type: string
+        source_url:
+          type: string
+          format: uri
+    TraumaAccessibilityIndicators:
+      type: object
+      properties:
+        empathy_language_present:
+          type: boolean
+        vulnerable_groups_mentioned:
+          type: boolean
+        ada_accessibility_statement:
+          type: boolean
+        virtual_consultations_offered:
+          type: boolean
+        interpreter_or_multilingual_access:
+          type: boolean
+        trauma_informed_claim_explicit:
+          type: boolean
+        notes:
+          type: string
+    IntakeFriction:
+      type: object
+      properties:
+        primary_contact_channel:
+          type: string
+          enum: [phone, form, email, chat]
+        form_required_field_count:
+          type: integer
+          minimum: 0
+        requires_detailed_medical_history:
+          type: boolean
+        requires_detailed_employment_history:
+          type: boolean
+        allows_minimal_first_touch:
+          type: boolean
+    Match:
+      type: object
+      required: [id, intake_id, attorney_id, score, reasons]
+      properties:
+        id:
+          type: string
+          format: uuid
+        intake_id:
+          type: string
+          format: uuid
+        attorney_id:
+          type: string
+          format: uuid
+        score:
+          type: number
+          format: float
+        reasons:
+          type: array
+          items:
+            type: string
+    OutreachDraft:
+      type: object
+      required: [id, intake_id, attorney_id, channel, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        intake_id:
+          type: string
+          format: uuid
+        attorney_id:
+          type: string
+          format: uuid
+        channel:
+          type: string
+          enum: [email, form]
+        subject:
+          type: string
+        body:
+          type: string
+        payload_json:
+          type: object
+          additionalProperties: true
+        status:
+          type: string
+          enum: [pending_review, approved, submitted, failed]
+    ReviewTask:
+      type: object
+      required: [id, draft_id, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        draft_id:
+          type: string
+          format: uuid
+        assignee_id:
+          type: string
+          format: uuid
+        checklist_json:
+          type: object
+          additionalProperties: true
+        status:
+          type: string
+          enum: [pending, in_review, approved, changes_requested, rejected]
+        decided_at:
+          type: string
+          format: date-time
+    ReviewDecisionRequest:
+      type: object
+      required: [decision]
+      properties:
+        decision:
+          type: string
+          enum: [approved, changes_requested, rejected]
+        notes:
+          type: string
+        updated_draft:
+          type: object
+          additionalProperties: true
