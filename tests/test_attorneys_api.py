@@ -51,9 +51,14 @@ class AttorneysApiTest(unittest.TestCase):
         self.thread.join(timeout=1)
         self.tempdir.cleanup()
 
-    def request_json(self, path):
+    def request_json(self, path, method='GET', payload=None):
         conn = HTTPConnection('127.0.0.1', self.port, timeout=2)
-        conn.request('GET', path)
+        headers = {}
+        body = None
+        if payload is not None:
+            body = json.dumps(payload)
+            headers['Content-Type'] = 'application/json'
+        conn.request(method, path, body=body, headers=headers)
         response = conn.getresponse()
         body = response.read().decode('utf-8')
         conn.close()
@@ -80,6 +85,33 @@ class AttorneysApiTest(unittest.TestCase):
         self.assertEqual(body['error'], 'validation_error')
         fields = {item['field'] for item in body['field_errors']}
         self.assertTrue({'state', 'practice_area', 'limit', 'offset'}.issubset(fields))
+
+    def test_create_intake_and_generate_matches(self):
+        intake_payload = {
+            'state': 'IA',
+            'practice_areas': ['personal_injury'],
+            'zip_code': '50309',
+            'city': 'Des Moines',
+            'language_pref': 'Spanish',
+            'urgency': 'high',
+            'summary': 'I was injured in a crash and need help with insurance and medical bills.',
+            'consent_at': '2026-02-07T12:00:00Z',
+            'contact': {
+                'full_name': 'Taylor Client',
+                'email': 'taylor@example.com',
+            },
+        }
+        status, intake = self.request_json('/v1/intakes', method='POST', payload=intake_payload)
+        self.assertEqual(status, 201)
+        self.assertEqual(intake['status'], 'new')
+
+        status, body = self.request_json(f"/v1/intakes/{intake['id']}/matches")
+        self.assertEqual(status, 200)
+        self.assertGreaterEqual(len(body['data']), 1)
+        top = body['data'][0]
+        self.assertIn('score', top)
+        self.assertIn('reasons', top)
+        self.assertTrue(any('Practice fit' in reason for reason in top['reasons']))
 
 
 if __name__ == '__main__':

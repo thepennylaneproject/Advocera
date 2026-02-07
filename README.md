@@ -21,6 +21,16 @@ Then query:
 curl "http://127.0.0.1:8080/v1/attorneys?state=IA&practice_area=personal_injury"
 ```
 
+Create intake and generate persisted matches:
+
+```bash
+curl -X POST "http://127.0.0.1:8080/v1/intakes" \\
+  -H "Content-Type: application/json" \\
+  -d '{"state":"IA","practice_areas":["personal_injury"],"zip_code":"50309","city":"Des Moines","urgency":"high","summary":"I was injured in a crash and need legal help with medical bills.","consent_at":"2026-02-07T12:00:00Z"}'
+
+curl "http://127.0.0.1:8080/v1/intakes/<intake-id>/matches"
+```
+
 Run tests:
 
 ```bash

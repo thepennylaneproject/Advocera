@@ -105,6 +105,14 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/Match'
+        '404':
+          description: Intake not found
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorResponse'
   /intakes/{intakeId}/drafts:
     post:
       tags: [Operator]
