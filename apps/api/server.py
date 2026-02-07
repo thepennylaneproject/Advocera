@@ -12,6 +12,8 @@ DB_PATH = 'data/advocera.db'
 PRACTICE_AREAS = {'personal_injury', 'civil_rights', 'employment_law', 'family_law'}
 ATTORNEY_STATUSES = {'active', 'inactive', 'suspended'}
 URGENCY_LEVELS = {'low', 'medium', 'high'}
+REVIEW_TASK_STATUSES = {'pending', 'in_review', 'approved', 'changes_requested', 'rejected'}
+REVIEW_DECISIONS = {'approved', 'changes_requested', 'rejected'}
 MAX_LIMIT = 100
 MAX_DRAFT_MATCHES = 3
 
@@ -38,6 +40,18 @@ def _parse_iso_dt(value):
 
 def _field_error(field, message):
     return {'field': field, 'message': message}
+
+
+def _read_json_body(handler):
+    try:
+        length = int(handler.headers.get('Content-Length', '0'))
+        raw = handler.rfile.read(length).decode('utf-8')
+        return json.loads(raw or '{}'), None
+    except (ValueError, json.JSONDecodeError):
+        return None, {
+            'error': 'validation_error',
+            'field_errors': [_field_error('body', 'Request body must be valid JSON.')],
+        }
 
 
 def _validate_attorney_query(params):
@@ -348,6 +362,8 @@ def _generate_drafts(conn, intake):
         (intake['id'],),
     )
 
+    _sync_review_tasks(conn, intake['id'])
+
     rows = conn.execute(
         '''
         SELECT id, intake_id, attorney_id, channel, subject, body, payload_json, status
@@ -384,6 +400,53 @@ def _parse_intake_subresource_path(path, resource):
     return parts[2]
 
 
+def _parse_review_task_subresource_path(path, resource):
+    prefix = '/v1/operator/review-tasks/'
+    suffix = '/' + resource
+    if not path.startswith(prefix) or not path.endswith(suffix):
+        return None
+    parts = path.strip('/').split('/')
+    if len(parts) != 5 or parts[0] != 'v1' or parts[1] != 'operator' or parts[2] != 'review-tasks' or parts[4] != resource:
+        return None
+    return parts[3]
+
+
+def _review_task_to_dict(row):
+    return {
+        'id': row['id'],
+        'draft_id': row['draft_id'],
+        'assignee_id': row['assignee_id'],
+        'checklist_json': _decode_json(row['checklist_json'], {}),
+        'status': row['status'],
+        'decided_at': row['decided_at'],
+    }
+
+
+def _sync_review_tasks(conn, intake_id):
+    rows = conn.execute(
+        '''
+        SELECT id
+        FROM lm_outreach_drafts
+        WHERE intake_id = ? AND status = 'pending_review'
+        ''',
+        (intake_id,),
+    ).fetchall()
+    for row in rows:
+        conn.execute(
+            '''
+            INSERT INTO lm_review_tasks (id, draft_id, checklist_json, status)
+            VALUES (?, ?, ?, 'pending')
+            ON CONFLICT(draft_id) DO UPDATE SET
+              status = CASE
+                WHEN lm_review_tasks.status IN ('approved', 'rejected') THEN lm_review_tasks.status
+                ELSE 'pending'
+              END,
+              updated_at = datetime('now')
+            ''',
+            (str(uuid.uuid4()), row['id'], json.dumps({'ready_for_review': True})),
+        )
+
+
 class Handler(BaseHTTPRequestHandler):
     def _json(self, status, payload):
         body = json.dumps(payload).encode('utf-8')
@@ -397,12 +460,9 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
 
         if parsed.path == '/v1/intakes':
-            try:
-                length = int(self.headers.get('Content-Length', '0'))
-                raw = self.rfile.read(length).decode('utf-8')
-                payload = json.loads(raw or '{}')
-            except (ValueError, json.JSONDecodeError):
-                self._json(422, {'error': 'validation_error', 'field_errors': [_field_error('body', 'Request body must be valid JSON.')]})
+            payload, error = _read_json_body(self)
+            if error:
+                self._json(422, error)
                 return
 
             errors = _validate_intake_payload(payload)
@@ -490,6 +550,163 @@ class Handler(BaseHTTPRequestHandler):
             self._json(201, {'data': drafts})
             return
 
+        task_id = _parse_review_task_subresource_path(parsed.path, 'claim')
+        if task_id:
+            try:
+                uuid.UUID(task_id)
+            except ValueError:
+                self._json(422, {'error': 'validation_error', 'field_errors': [_field_error('taskId', 'taskId must be a UUID.')]})
+                return
+
+            payload, error = _read_json_body(self)
+            if error:
+                self._json(422, error)
+                return
+            assignee_id = payload.get('assignee_id') or 'operator-local'
+
+            conn = sqlite3.connect(DB_PATH)
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                '''
+                SELECT id, draft_id, assignee_id, checklist_json, status, decided_at
+                FROM lm_review_tasks
+                WHERE id = ?
+                ''',
+                (task_id,),
+            ).fetchone()
+            if not row:
+                conn.close()
+                self._json(404, {'error': 'not_found'})
+                return
+
+            if row['status'] not in {'pending', 'in_review'}:
+                conn.close()
+                self._json(409, {'error': 'conflict', 'reason': 'task_not_claimable'})
+                return
+
+            with conn:
+                conn.execute(
+                    '''
+                    UPDATE lm_review_tasks
+                    SET assignee_id = ?, status = 'in_review', updated_at = datetime('now')
+                    WHERE id = ?
+                    ''',
+                    (assignee_id, task_id),
+                )
+                updated = conn.execute(
+                    '''
+                    SELECT id, draft_id, assignee_id, checklist_json, status, decided_at
+                    FROM lm_review_tasks
+                    WHERE id = ?
+                    ''',
+                    (task_id,),
+                ).fetchone()
+            conn.close()
+            self._json(200, _review_task_to_dict(updated))
+            return
+
+        task_id = _parse_review_task_subresource_path(parsed.path, 'decision')
+        if task_id:
+            try:
+                uuid.UUID(task_id)
+            except ValueError:
+                self._json(422, {'error': 'validation_error', 'field_errors': [_field_error('taskId', 'taskId must be a UUID.')]})
+                return
+
+            payload, error = _read_json_body(self)
+            if error:
+                self._json(422, error)
+                return
+
+            decision = payload.get('decision')
+            notes = payload.get('notes')
+            updated_draft = payload.get('updated_draft')
+            errors = []
+            if decision not in REVIEW_DECISIONS:
+                errors.append(_field_error('decision', f'decision must be one of {sorted(REVIEW_DECISIONS)}.'))
+            if updated_draft is not None and not isinstance(updated_draft, dict):
+                errors.append(_field_error('updated_draft', 'updated_draft must be an object when provided.'))
+            if errors:
+                self._json(422, {'error': 'validation_error', 'field_errors': errors})
+                return
+
+            task_status = decision
+            draft_status = 'approved' if decision == 'approved' else ('pending_review' if decision == 'changes_requested' else 'failed')
+            decided_at = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+
+            conn = sqlite3.connect(DB_PATH)
+            conn.row_factory = sqlite3.Row
+            task = conn.execute(
+                '''
+                SELECT id, draft_id, assignee_id, checklist_json, status, decided_at
+                FROM lm_review_tasks
+                WHERE id = ?
+                ''',
+                (task_id,),
+            ).fetchone()
+            if not task:
+                conn.close()
+                self._json(404, {'error': 'not_found'})
+                return
+
+            if task['status'] not in {'pending', 'in_review'}:
+                conn.close()
+                self._json(409, {'error': 'conflict', 'reason': 'task_not_decidable'})
+                return
+
+            checklist = _decode_json(task['checklist_json'], {})
+            checklist['decision'] = decision
+            checklist['notes'] = notes
+            checklist['updated_draft'] = updated_draft
+
+            with conn:
+                if isinstance(updated_draft, dict):
+                    fields = []
+                    values = []
+                    if 'subject' in updated_draft:
+                        fields.append('subject = ?')
+                        values.append(updated_draft['subject'])
+                    if 'body' in updated_draft:
+                        fields.append('body = ?')
+                        values.append(updated_draft['body'])
+                    if 'payload_json' in updated_draft:
+                        fields.append('payload_json = ?')
+                        values.append(json.dumps(updated_draft['payload_json']))
+                    if fields:
+                        values.extend([task['draft_id']])
+                        conn.execute(
+                            f"UPDATE lm_outreach_drafts SET {', '.join(fields)}, updated_at = datetime('now') WHERE id = ?",
+                            tuple(values),
+                        )
+
+                conn.execute(
+                    '''
+                    UPDATE lm_outreach_drafts
+                    SET status = ?, updated_at = datetime('now')
+                    WHERE id = ?
+                    ''',
+                    (draft_status, task['draft_id']),
+                )
+                conn.execute(
+                    '''
+                    UPDATE lm_review_tasks
+                    SET checklist_json = ?, status = ?, decided_at = ?, updated_at = datetime('now')
+                    WHERE id = ?
+                    ''',
+                    (json.dumps(checklist), task_status, decided_at, task_id),
+                )
+                updated_task = conn.execute(
+                    '''
+                    SELECT id, draft_id, assignee_id, checklist_json, status, decided_at
+                    FROM lm_review_tasks
+                    WHERE id = ?
+                    ''',
+                    (task_id,),
+                ).fetchone()
+            conn.close()
+            self._json(200, _review_task_to_dict(updated_task))
+            return
+
         self._json(404, {'error': 'not_found'})
 
     def do_GET(self):
@@ -497,6 +714,34 @@ class Handler(BaseHTTPRequestHandler):
 
         if parsed.path == '/health':
             self._json(200, {'ok': True})
+            return
+
+        if parsed.path == '/v1/operator/review-tasks':
+            params = parse_qs(parsed.query)
+            status = _first(params, 'status', 'pending')
+            if status not in REVIEW_TASK_STATUSES:
+                self._json(
+                    422,
+                    {
+                        'error': 'validation_error',
+                        'field_errors': [_field_error('status', f'status must be one of {sorted(REVIEW_TASK_STATUSES)}.')],
+                    },
+                )
+                return
+
+            conn = sqlite3.connect(DB_PATH)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                '''
+                SELECT id, draft_id, assignee_id, checklist_json, status, decided_at
+                FROM lm_review_tasks
+                WHERE status = ?
+                ORDER BY updated_at ASC
+                ''',
+                (status,),
+            ).fetchall()
+            conn.close()
+            self._json(200, {'data': [_review_task_to_dict(row) for row in rows]})
             return
 
         if parsed.path == '/v1/attorneys':

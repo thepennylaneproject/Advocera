@@ -137,6 +137,56 @@ class AttorneysApiTest(unittest.TestCase):
         self.assertEqual(body['error'], 'conflict')
         self.assertEqual(body['reason'], 'intake_not_matched')
 
+    def test_review_task_queue_claim_and_decision(self):
+        intake_payload = {
+            'state': 'IA',
+            'practice_areas': ['personal_injury'],
+            'zip_code': '50309',
+            'city': 'Des Moines',
+            'urgency': 'high',
+            'summary': 'I need help after an injury and need guidance on next steps quickly.',
+            'consent_at': '2026-02-07T12:00:00Z',
+        }
+        status, intake = self.request_json('/v1/intakes', method='POST', payload=intake_payload)
+        self.assertEqual(status, 201)
+
+        status, _ = self.request_json(f"/v1/intakes/{intake['id']}/matches")
+        self.assertEqual(status, 200)
+        status, _ = self.request_json(f"/v1/intakes/{intake['id']}/drafts", method='POST', payload={})
+        self.assertEqual(status, 201)
+
+        status, queue = self.request_json('/v1/operator/review-tasks?status=pending')
+        self.assertEqual(status, 200)
+        self.assertGreaterEqual(len(queue['data']), 1)
+        task = queue['data'][0]
+
+        status, claimed = self.request_json(
+            f"/v1/operator/review-tasks/{task['id']}/claim",
+            method='POST',
+            payload={'assignee_id': 'reviewer-1'},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(claimed['status'], 'in_review')
+        self.assertEqual(claimed['assignee_id'], 'reviewer-1')
+
+        status, decided = self.request_json(
+            f"/v1/operator/review-tasks/{task['id']}/decision",
+            method='POST',
+            payload={
+                'decision': 'approved',
+                'notes': 'Looks good.',
+                'updated_draft': {'subject': 'Reviewed subject'},
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(decided['status'], 'approved')
+        self.assertIsNotNone(decided['decided_at'])
+
+    def test_review_task_list_validation_error(self):
+        status, body = self.request_json('/v1/operator/review-tasks?status=unknown')
+        self.assertEqual(status, 422)
+        self.assertEqual(body['error'], 'validation_error')
+
 
 if __name__ == '__main__':
     unittest.main()

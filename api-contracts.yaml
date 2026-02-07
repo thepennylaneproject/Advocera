@@ -175,6 +175,12 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/ReviewTask'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorResponse'
   /operator/review-tasks/{taskId}/claim:
     post:
       tags: [Operator]
@@ -194,6 +200,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ReviewTask'
+        '404':
+          description: Task not found
+        '409':
+          description: Task cannot be claimed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictResponse'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorResponse'
   /operator/review-tasks/{taskId}/decision:
     post:
       tags: [Operator]
@@ -219,6 +239,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ReviewTask'
+        '404':
+          description: Task not found
+        '409':
+          description: Task cannot be decided
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictResponse'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorResponse'
 components:
   schemas:
     PracticeArea:

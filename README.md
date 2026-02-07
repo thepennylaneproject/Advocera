@@ -30,6 +30,7 @@ curl -X POST "http://127.0.0.1:8080/v1/intakes" \\
 
 curl "http://127.0.0.1:8080/v1/intakes/<intake-id>/matches"
 curl -X POST "http://127.0.0.1:8080/v1/intakes/<intake-id>/drafts" -H "Content-Type: application/json" -d "{}"
+curl "http://127.0.0.1:8080/v1/operator/review-tasks?status=pending"
 ```
 
 Run tests:
