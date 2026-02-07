@@ -139,6 +139,18 @@ paths:
                       $ref: '#/components/schemas/OutreachDraft'
         '409':
           description: Consent missing or intake not eligible
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictResponse'
+        '404':
+          description: Intake not found
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorResponse'
   /operator/review-tasks:
     get:
       tags: [Operator]
@@ -546,3 +558,12 @@ components:
                 type: string
               message:
                 type: string
+    ConflictResponse:
+      type: object
+      required: [error, reason]
+      properties:
+        error:
+          type: string
+          enum: [conflict]
+        reason:
+          type: string

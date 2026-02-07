@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal HTTP API for intake, attorneys, and matching."""
+"""Minimal HTTP API for intake, attorneys, matching, and outreach drafts."""
 
 import json
 import sqlite3
@@ -13,6 +13,7 @@ PRACTICE_AREAS = {'personal_injury', 'civil_rights', 'employment_law', 'family_l
 ATTORNEY_STATUSES = {'active', 'inactive', 'suspended'}
 URGENCY_LEVELS = {'low', 'medium', 'high'}
 MAX_LIMIT = 100
+MAX_DRAFT_MATCHES = 3
 
 
 def _decode_json(text, fallback):
@@ -225,7 +226,6 @@ def _score_match(intake, attorney):
 
 
 def _persist_matches(conn, intake, attorneys):
-    saved = []
     for attorney in attorneys:
         score, reasons = _score_match(intake, attorney)
         if score <= 0:
@@ -249,6 +249,10 @@ def _persist_matches(conn, intake, attorneys):
         (intake['id'],),
     )
 
+    return _load_matches(conn, intake['id'])
+
+
+def _load_matches(conn, intake_id):
     rows = conn.execute(
         '''
         SELECT id, intake_id, attorney_id, score, reasons_json
@@ -256,21 +260,128 @@ def _persist_matches(conn, intake, attorneys):
         WHERE intake_id = ?
         ORDER BY score DESC, attorney_id ASC
         ''',
+        (intake_id,),
+    ).fetchall()
+
+    return [
+        {
+            'id': row['id'],
+            'intake_id': row['intake_id'],
+            'attorney_id': row['attorney_id'],
+            'score': row['score'],
+            'reasons': _decode_json(row['reasons_json'], []),
+        }
+        for row in rows
+    ]
+
+
+def _draft_content(intake, attorney, match):
+    city_or_zip = intake['city'] or intake['zip_code']
+    subject = f"New potential client referral: {city_or_zip}"
+    top_reasons = '; '.join(match['reasons'][:2]) if match['reasons'] else 'Strong fit for this intake.'
+    body = (
+        f"Hello {attorney.get('full_name')},\n\n"
+        f"We have a new intake for {', '.join(_decode_json(intake['practice_areas_json'], []))}. "
+        f"Summary: {intake['summary']}\n\n"
+        f"Why selected: {top_reasons}\n\n"
+        "If you are available, please reply with your intake process and next available consultation window."
+    )
+    payload = {
+        'intake_id': intake['id'],
+        'attorney_id': attorney['id'],
+        'attorney_name': attorney['full_name'],
+        'practice_areas': _decode_json(intake['practice_areas_json'], []),
+        'urgency': intake['urgency'],
+        'score': match['score'],
+        'reasons': match['reasons'],
+    }
+    return subject, body, payload
+
+
+def _generate_drafts(conn, intake):
+    if not intake['consent_at']:
+        return None, 'consent_missing'
+
+    if intake['status'] not in {'matched', 'draft_pending_review', 'in_review', 'ready_for_submit'}:
+        return None, 'intake_not_matched'
+
+    matches = _load_matches(conn, intake['id'])
+    if not matches:
+        return None, 'no_matches'
+
+    top_matches = matches[:MAX_DRAFT_MATCHES]
+    drafts = []
+
+    for match in top_matches:
+        attorney_row = conn.execute(
+            '''
+            SELECT id, full_name
+            FROM lm_attorneys
+            WHERE id = ?
+            ''',
+            (match['attorney_id'],),
+        ).fetchone()
+        if not attorney_row:
+            continue
+
+        attorney = {'id': attorney_row['id'], 'full_name': attorney_row['full_name']}
+        subject, body, payload = _draft_content(intake, attorney, match)
+        draft_id = str(uuid.uuid4())
+
+        conn.execute(
+            '''
+            INSERT INTO lm_outreach_drafts (
+              id, intake_id, attorney_id, channel, subject, body, payload_json, status
+            ) VALUES (?, ?, ?, 'email', ?, ?, ?, 'pending_review')
+            ON CONFLICT(intake_id, attorney_id, channel) DO UPDATE SET
+              subject = excluded.subject,
+              body = excluded.body,
+              payload_json = excluded.payload_json,
+              status = 'pending_review',
+              updated_at = datetime('now')
+            ''',
+            (draft_id, intake['id'], attorney['id'], subject, body, json.dumps(payload)),
+        )
+
+    conn.execute(
+        "UPDATE lm_intakes SET status = 'draft_pending_review', updated_at = datetime('now') WHERE id = ?",
+        (intake['id'],),
+    )
+
+    rows = conn.execute(
+        '''
+        SELECT id, intake_id, attorney_id, channel, subject, body, payload_json, status
+        FROM lm_outreach_drafts
+        WHERE intake_id = ?
+        ORDER BY updated_at DESC
+        ''',
         (intake['id'],),
     ).fetchall()
 
     for row in rows:
-        saved.append(
+        drafts.append(
             {
                 'id': row['id'],
                 'intake_id': row['intake_id'],
                 'attorney_id': row['attorney_id'],
-                'score': row['score'],
-                'reasons': _decode_json(row['reasons_json'], []),
+                'channel': row['channel'],
+                'subject': row['subject'],
+                'body': row['body'],
+                'payload_json': _decode_json(row['payload_json'], {}),
+                'status': row['status'],
             }
         )
 
-    return saved
+    return drafts, None
+
+
+def _parse_intake_subresource_path(path, resource):
+    if not path.startswith('/v1/intakes/') or not path.endswith('/' + resource):
+        return None
+    parts = path.strip('/').split('/')
+    if len(parts) != 4 or parts[0] != 'v1' or parts[1] != 'intakes' or parts[3] != resource:
+        return None
+    return parts[2]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -284,67 +395,102 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
-        if parsed.path != '/v1/intakes':
-            self._json(404, {'error': 'not_found'})
+
+        if parsed.path == '/v1/intakes':
+            try:
+                length = int(self.headers.get('Content-Length', '0'))
+                raw = self.rfile.read(length).decode('utf-8')
+                payload = json.loads(raw or '{}')
+            except (ValueError, json.JSONDecodeError):
+                self._json(422, {'error': 'validation_error', 'field_errors': [_field_error('body', 'Request body must be valid JSON.')]})
+                return
+
+            errors = _validate_intake_payload(payload)
+            if errors:
+                self._json(422, {'error': 'validation_error', 'field_errors': errors})
+                return
+
+            intake_id = str(uuid.uuid4())
+            now = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+
+            conn = sqlite3.connect(DB_PATH)
+            conn.execute('PRAGMA foreign_keys = ON;')
+            with conn:
+                conn.execute(
+                    '''
+                    INSERT INTO lm_intakes (
+                      id, state, practice_areas_json, zip_code, city, language_pref, urgency,
+                      budget_max_usd, summary, contact_json, consent_at, status, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)
+                    ''',
+                    (
+                        intake_id,
+                        payload['state'],
+                        json.dumps(payload['practice_areas']),
+                        payload['zip_code'],
+                        payload.get('city'),
+                        payload.get('language_pref'),
+                        payload['urgency'],
+                        payload.get('budget_max_usd'),
+                        payload['summary'],
+                        json.dumps(payload.get('contact')) if payload.get('contact') is not None else None,
+                        payload['consent_at'],
+                        now,
+                        now,
+                    ),
+                )
+            conn.close()
+
+            response = {
+                'id': intake_id,
+                'state': payload['state'],
+                'practice_areas': payload['practice_areas'],
+                'zip_code': payload['zip_code'],
+                'city': payload.get('city'),
+                'urgency': payload['urgency'],
+                'summary': payload['summary'],
+                'status': 'new',
+                'consent_at': payload['consent_at'],
+                'created_at': now,
+            }
+            self._json(201, response)
             return
 
-        try:
-            length = int(self.headers.get('Content-Length', '0'))
-            raw = self.rfile.read(length).decode('utf-8')
-            payload = json.loads(raw or '{}')
-        except (ValueError, json.JSONDecodeError):
-            self._json(422, {'error': 'validation_error', 'field_errors': [_field_error('body', 'Request body must be valid JSON.')]})
-            return
+        intake_id = _parse_intake_subresource_path(parsed.path, 'drafts')
+        if intake_id:
+            try:
+                uuid.UUID(intake_id)
+            except ValueError:
+                self._json(422, {'error': 'validation_error', 'field_errors': [_field_error('intakeId', 'intakeId must be a UUID.')]})
+                return
 
-        errors = _validate_intake_payload(payload)
-        if errors:
-            self._json(422, {'error': 'validation_error', 'field_errors': errors})
-            return
-
-        intake_id = str(uuid.uuid4())
-        now = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
-
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute('PRAGMA foreign_keys = ON;')
-        with conn:
-            conn.execute(
+            conn = sqlite3.connect(DB_PATH)
+            conn.row_factory = sqlite3.Row
+            intake = conn.execute(
                 '''
-                INSERT INTO lm_intakes (
-                  id, state, practice_areas_json, zip_code, city, language_pref, urgency,
-                  budget_max_usd, summary, contact_json, consent_at, status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)
+                SELECT id, state, practice_areas_json, zip_code, city, language_pref, urgency, summary, status, consent_at
+                FROM lm_intakes
+                WHERE id = ?
                 ''',
-                (
-                    intake_id,
-                    payload['state'],
-                    json.dumps(payload['practice_areas']),
-                    payload['zip_code'],
-                    payload.get('city'),
-                    payload.get('language_pref'),
-                    payload['urgency'],
-                    payload.get('budget_max_usd'),
-                    payload['summary'],
-                    json.dumps(payload.get('contact')) if payload.get('contact') is not None else None,
-                    payload['consent_at'],
-                    now,
-                    now,
-                ),
-            )
-        conn.close()
+                (intake_id,),
+            ).fetchone()
+            if not intake:
+                conn.close()
+                self._json(404, {'error': 'not_found'})
+                return
 
-        response = {
-            'id': intake_id,
-            'state': payload['state'],
-            'practice_areas': payload['practice_areas'],
-            'zip_code': payload['zip_code'],
-            'city': payload.get('city'),
-            'urgency': payload['urgency'],
-            'summary': payload['summary'],
-            'status': 'new',
-            'consent_at': payload['consent_at'],
-            'created_at': now,
-        }
-        self._json(201, response)
+            with conn:
+                drafts, block_reason = _generate_drafts(conn, intake)
+            conn.close()
+
+            if block_reason:
+                self._json(409, {'error': 'conflict', 'reason': block_reason})
+                return
+
+            self._json(201, {'data': drafts})
+            return
+
+        self._json(404, {'error': 'not_found'})
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -397,13 +543,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {'data': paged, 'meta': {'total': total, 'limit': q['limit'], 'offset': q['offset']}})
             return
 
-        if parsed.path.startswith('/v1/intakes/') and parsed.path.endswith('/matches'):
-            parts = parsed.path.strip('/').split('/')
-            if len(parts) != 4 or parts[0] != 'v1' or parts[1] != 'intakes' or parts[3] != 'matches':
-                self._json(404, {'error': 'not_found'})
-                return
-
-            intake_id = parts[2]
+        intake_id = _parse_intake_subresource_path(parsed.path, 'matches')
+        if intake_id:
             try:
                 uuid.UUID(intake_id)
             except ValueError:

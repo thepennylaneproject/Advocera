@@ -113,6 +113,30 @@ class AttorneysApiTest(unittest.TestCase):
         self.assertIn('reasons', top)
         self.assertTrue(any('Practice fit' in reason for reason in top['reasons']))
 
+        status, drafts = self.request_json(f"/v1/intakes/{intake['id']}/drafts", method='POST', payload={})
+        self.assertEqual(status, 201)
+        self.assertGreaterEqual(len(drafts['data']), 1)
+        self.assertEqual(drafts['data'][0]['status'], 'pending_review')
+        self.assertIn('subject', drafts['data'][0])
+
+    def test_generate_drafts_returns_409_when_not_matched(self):
+        intake_payload = {
+            'state': 'IA',
+            'practice_areas': ['family_law'],
+            'zip_code': '50309',
+            'city': 'Des Moines',
+            'urgency': 'medium',
+            'summary': 'I need help with a family matter and want to understand next steps.',
+            'consent_at': '2026-02-07T12:00:00Z',
+        }
+        status, intake = self.request_json('/v1/intakes', method='POST', payload=intake_payload)
+        self.assertEqual(status, 201)
+
+        status, body = self.request_json(f"/v1/intakes/{intake['id']}/drafts", method='POST', payload={})
+        self.assertEqual(status, 409)
+        self.assertEqual(body['error'], 'conflict')
+        self.assertEqual(body['reason'], 'intake_not_matched')
+
 
 if __name__ == '__main__':
     unittest.main()
