@@ -21,6 +21,12 @@ Then query:
 curl "http://127.0.0.1:8080/v1/attorneys?state=IA&practice_area=personal_injury"
 ```
 
+Run tests:
+
+```bash
+python3 -m unittest tests/test_attorneys_api.py
+```
+
 ## Notes
 
 - `practice_area`, `city`, `status` filters are supported on `GET /v1/attorneys`.
