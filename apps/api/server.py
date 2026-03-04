@@ -42,6 +42,30 @@ def _field_error(field, message):
     return {'field': field, 'message': message}
 
 
+def _audit_log(conn, *, intake_id, actor_id, entity_type, entity_id, action, before=None, after=None):
+    conn.execute(
+        '''
+        INSERT INTO lm_audit_logs (
+          id, intake_id, actor_id, entity_type, entity_id, action, before_json, after_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''',
+        (
+            str(uuid.uuid4()),
+            intake_id,
+            actor_id,
+            entity_type,
+            entity_id,
+            action,
+            json.dumps(before) if before is not None else None,
+            json.dumps(after) if after is not None else None,
+        ),
+    )
+
+
+def _serialize_row(row):
+    return dict(row) if row is not None else None
+
+
 def _read_json_body(handler):
     try:
         length = int(handler.headers.get('Content-Length', '0'))
@@ -240,6 +264,12 @@ def _score_match(intake, attorney):
 
 
 def _persist_matches(conn, intake, attorneys):
+    before_count = conn.execute(
+        'SELECT COUNT(*) FROM lm_matches WHERE intake_id = ?',
+        (intake['id'],),
+    ).fetchone()[0]
+    before_status = intake['status']
+
     for attorney in attorneys:
         score, reasons = _score_match(intake, attorney)
         if score <= 0:
@@ -261,6 +291,20 @@ def _persist_matches(conn, intake, attorneys):
     conn.execute(
         "UPDATE lm_intakes SET status = 'matched', updated_at = datetime('now') WHERE id = ?",
         (intake['id'],),
+    )
+    after_count = conn.execute(
+        'SELECT COUNT(*) FROM lm_matches WHERE intake_id = ?',
+        (intake['id'],),
+    ).fetchone()[0]
+    _audit_log(
+        conn,
+        intake_id=intake['id'],
+        actor_id='system:matcher',
+        entity_type='lm_intakes',
+        entity_id=intake['id'],
+        action='matches.generated',
+        before={'status': before_status, 'match_count': before_count},
+        after={'status': 'matched', 'match_count': after_count},
     )
 
     return _load_matches(conn, intake['id'])
@@ -327,6 +371,15 @@ def _generate_drafts(conn, intake):
     drafts = []
 
     for match in top_matches:
+        before_draft = conn.execute(
+            '''
+            SELECT id, intake_id, attorney_id, channel, subject, body, payload_json, status
+            FROM lm_outreach_drafts
+            WHERE intake_id = ? AND attorney_id = ? AND channel = 'email'
+            ''',
+            (intake['id'], match['attorney_id']),
+        ).fetchone()
+
         attorney_row = conn.execute(
             '''
             SELECT id, full_name
@@ -356,10 +409,39 @@ def _generate_drafts(conn, intake):
             ''',
             (draft_id, intake['id'], attorney['id'], subject, body, json.dumps(payload)),
         )
+        after_draft = conn.execute(
+            '''
+            SELECT id, intake_id, attorney_id, channel, subject, body, payload_json, status
+            FROM lm_outreach_drafts
+            WHERE intake_id = ? AND attorney_id = ? AND channel = 'email'
+            ''',
+            (intake['id'], attorney['id']),
+        ).fetchone()
+        _audit_log(
+            conn,
+            intake_id=intake['id'],
+            actor_id='system:draft_generator',
+            entity_type='lm_outreach_drafts',
+            entity_id=after_draft['id'],
+            action='draft.upserted',
+            before=_serialize_row(before_draft),
+            after=_serialize_row(after_draft),
+        )
 
+    before_status = intake['status']
     conn.execute(
         "UPDATE lm_intakes SET status = 'draft_pending_review', updated_at = datetime('now') WHERE id = ?",
         (intake['id'],),
+    )
+    _audit_log(
+        conn,
+        intake_id=intake['id'],
+        actor_id='system:draft_generator',
+        entity_type='lm_intakes',
+        entity_id=intake['id'],
+        action='intake.status_updated',
+        before={'status': before_status},
+        after={'status': 'draft_pending_review'},
     )
 
     _sync_review_tasks(conn, intake['id'])
@@ -432,6 +514,14 @@ def _sync_review_tasks(conn, intake_id):
         (intake_id,),
     ).fetchall()
     for row in rows:
+        before_task = conn.execute(
+            '''
+            SELECT id, draft_id, assignee_id, checklist_json, status, decided_at
+            FROM lm_review_tasks
+            WHERE draft_id = ?
+            ''',
+            (row['id'],),
+        ).fetchone()
         conn.execute(
             '''
             INSERT INTO lm_review_tasks (id, draft_id, checklist_json, status)
@@ -444,6 +534,24 @@ def _sync_review_tasks(conn, intake_id):
               updated_at = datetime('now')
             ''',
             (str(uuid.uuid4()), row['id'], json.dumps({'ready_for_review': True})),
+        )
+        after_task = conn.execute(
+            '''
+            SELECT id, draft_id, assignee_id, checklist_json, status, decided_at
+            FROM lm_review_tasks
+            WHERE draft_id = ?
+            ''',
+            (row['id'],),
+        ).fetchone()
+        _audit_log(
+            conn,
+            intake_id=intake_id,
+            actor_id='system:review_queue',
+            entity_type='lm_review_tasks',
+            entity_id=after_task['id'],
+            action='review_task.synced',
+            before=_serialize_row(before_task),
+            after=_serialize_row(after_task),
         )
 
 
@@ -498,6 +606,20 @@ class Handler(BaseHTTPRequestHandler):
                         now,
                         now,
                     ),
+                )
+                _audit_log(
+                    conn,
+                    intake_id=intake_id,
+                    actor_id='system:intake_api',
+                    entity_type='lm_intakes',
+                    entity_id=intake_id,
+                    action='intake.created',
+                    before=None,
+                    after={
+                        'status': 'new',
+                        'state': payload['state'],
+                        'practice_areas': payload['practice_areas'],
+                    },
                 )
             conn.close()
 
@@ -584,6 +706,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(409, {'error': 'conflict', 'reason': 'task_not_claimable'})
                 return
 
+            before_task = _serialize_row(row)
+            intake_for_task = conn.execute(
+                'SELECT intake_id FROM lm_outreach_drafts WHERE id = ?',
+                (row['draft_id'],),
+            ).fetchone()
             with conn:
                 conn.execute(
                     '''
@@ -601,6 +728,16 @@ class Handler(BaseHTTPRequestHandler):
                     ''',
                     (task_id,),
                 ).fetchone()
+                _audit_log(
+                    conn,
+                    intake_id=(intake_for_task['intake_id'] if intake_for_task else None),
+                    actor_id=assignee_id,
+                    entity_type='lm_review_tasks',
+                    entity_id=task_id,
+                    action='review_task.claimed',
+                    before=before_task,
+                    after=_serialize_row(updated),
+                )
             conn.close()
             self._json(200, _review_task_to_dict(updated))
             return
@@ -658,6 +795,15 @@ class Handler(BaseHTTPRequestHandler):
             checklist['decision'] = decision
             checklist['notes'] = notes
             checklist['updated_draft'] = updated_draft
+            draft_before = conn.execute(
+                '''
+                SELECT id, intake_id, attorney_id, channel, subject, body, payload_json, status
+                FROM lm_outreach_drafts
+                WHERE id = ?
+                ''',
+                (task['draft_id'],),
+            ).fetchone()
+            before_task = _serialize_row(task)
 
             with conn:
                 if isinstance(updated_draft, dict):
@@ -703,6 +849,34 @@ class Handler(BaseHTTPRequestHandler):
                     ''',
                     (task_id,),
                 ).fetchone()
+                draft_after = conn.execute(
+                    '''
+                    SELECT id, intake_id, attorney_id, channel, subject, body, payload_json, status
+                    FROM lm_outreach_drafts
+                    WHERE id = ?
+                    ''',
+                    (task['draft_id'],),
+                ).fetchone()
+                _audit_log(
+                    conn,
+                    intake_id=draft_after['intake_id'],
+                    actor_id=(task['assignee_id'] or 'operator-local'),
+                    entity_type='lm_outreach_drafts',
+                    entity_id=task['draft_id'],
+                    action='draft.review_decision_applied',
+                    before=_serialize_row(draft_before),
+                    after=_serialize_row(draft_after),
+                )
+                _audit_log(
+                    conn,
+                    intake_id=draft_after['intake_id'],
+                    actor_id=(task['assignee_id'] or 'operator-local'),
+                    entity_type='lm_review_tasks',
+                    entity_id=task_id,
+                    action='review_task.decided',
+                    before=before_task,
+                    after=_serialize_row(updated_task),
+                )
             conn.close()
             self._json(200, _review_task_to_dict(updated_task))
             return
@@ -714,6 +888,70 @@ class Handler(BaseHTTPRequestHandler):
 
         if parsed.path == '/health':
             self._json(200, {'ok': True})
+            return
+
+        if parsed.path == '/v1/operator/audit-logs':
+            params = parse_qs(parsed.query)
+            intake_id = _first(params, 'intake_id')
+            limit_raw = _first(params, 'limit', '100')
+
+            if not intake_id:
+                self._json(
+                    422,
+                    {'error': 'validation_error', 'field_errors': [_field_error('intake_id', 'intake_id is required.')]},
+                )
+                return
+            try:
+                uuid.UUID(intake_id)
+            except ValueError:
+                self._json(
+                    422,
+                    {'error': 'validation_error', 'field_errors': [_field_error('intake_id', 'intake_id must be a UUID.')]},
+                )
+                return
+            try:
+                limit = int(limit_raw)
+                if limit < 1 or limit > 500:
+                    raise ValueError()
+            except ValueError:
+                self._json(
+                    422,
+                    {'error': 'validation_error', 'field_errors': [_field_error('limit', 'limit must be an integer between 1 and 500.')]},
+                )
+                return
+
+            conn = sqlite3.connect(DB_PATH)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                '''
+                SELECT id, intake_id, actor_id, entity_type, entity_id, action, before_json, after_json, created_at
+                FROM lm_audit_logs
+                WHERE intake_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                ''',
+                (intake_id, limit),
+            ).fetchall()
+            conn.close()
+            self._json(
+                200,
+                {
+                    'data': [
+                        {
+                            'id': row['id'],
+                            'intake_id': row['intake_id'],
+                            'actor_id': row['actor_id'],
+                            'entity_type': row['entity_type'],
+                            'entity_id': row['entity_id'],
+                            'action': row['action'],
+                            'before': _decode_json(row['before_json'], None),
+                            'after': _decode_json(row['after_json'], None),
+                            'created_at': row['created_at'],
+                        }
+                        for row in rows
+                    ]
+                },
+            )
             return
 
         if parsed.path == '/v1/operator/review-tasks':

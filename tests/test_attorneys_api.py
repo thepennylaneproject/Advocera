@@ -187,6 +187,35 @@ class AttorneysApiTest(unittest.TestCase):
         self.assertEqual(status, 422)
         self.assertEqual(body['error'], 'validation_error')
 
+    def test_audit_logs_query_by_intake_id(self):
+        intake_payload = {
+            'state': 'IA',
+            'practice_areas': ['personal_injury'],
+            'zip_code': '50309',
+            'city': 'Des Moines',
+            'urgency': 'high',
+            'summary': 'I am looking for representation after a recent injury incident.',
+            'consent_at': '2026-02-07T12:00:00Z',
+        }
+        status, intake = self.request_json('/v1/intakes', method='POST', payload=intake_payload)
+        self.assertEqual(status, 201)
+        status, _ = self.request_json(f"/v1/intakes/{intake['id']}/matches")
+        self.assertEqual(status, 200)
+        status, _ = self.request_json(f"/v1/intakes/{intake['id']}/drafts", method='POST', payload={})
+        self.assertEqual(status, 201)
+
+        status, logs = self.request_json(f"/v1/operator/audit-logs?intake_id={intake['id']}")
+        self.assertEqual(status, 200)
+        self.assertGreaterEqual(len(logs['data']), 3)
+        actions = {item['action'] for item in logs['data']}
+        self.assertIn('intake.created', actions)
+        self.assertIn('matches.generated', actions)
+
+    def test_audit_logs_validation_error(self):
+        status, body = self.request_json('/v1/operator/audit-logs')
+        self.assertEqual(status, 422)
+        self.assertEqual(body['error'], 'validation_error')
+
 
 if __name__ == '__main__':
     unittest.main()

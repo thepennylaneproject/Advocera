@@ -253,6 +253,43 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ValidationErrorResponse'
+  /operator/audit-logs:
+    get:
+      tags: [Operator]
+      summary: List audit logs by intake id
+      operationId: listAuditLogs
+      parameters:
+        - in: query
+          name: intake_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        '200':
+          description: Audit log entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditLog'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorResponse'
 components:
   schemas:
     PracticeArea:
@@ -601,3 +638,31 @@ components:
           enum: [conflict]
         reason:
           type: string
+    AuditLog:
+      type: object
+      required: [id, entity_type, entity_id, action, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        intake_id:
+          type: string
+          format: uuid
+        actor_id:
+          type: string
+        entity_type:
+          type: string
+        entity_id:
+          type: string
+          format: uuid
+        action:
+          type: string
+        before:
+          type: object
+          additionalProperties: true
+        after:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
