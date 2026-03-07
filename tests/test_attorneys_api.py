@@ -12,6 +12,8 @@ from scripts import run_migrations, seed_attorneys
 from apps.api import server
 from http.server import HTTPServer
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
 
 class AttorneysApiTest(unittest.TestCase):
     def setUp(self):
@@ -20,13 +22,13 @@ class AttorneysApiTest(unittest.TestCase):
 
         run_migrations.apply_migrations(
             self.db_path,
-            Path('/Users/sarahsahl/Desktop/advocera/db/migrations'),
+            _REPO_ROOT / 'db' / 'migrations',
         )
 
         conn = seed_attorneys.sqlite3.connect(self.db_path)
         conn.execute('PRAGMA foreign_keys = ON;')
         seed_data = json.loads(
-            Path('/Users/sarahsahl/Desktop/advocera/seeds/attorneys.seed.json').read_text(
+            (_REPO_ROOT / 'seeds' / 'attorneys.seed.json').read_text(
                 encoding='utf-8'
             )
         )
