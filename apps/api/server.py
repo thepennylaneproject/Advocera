@@ -2,13 +2,14 @@
 """Minimal HTTP API for intake, attorneys, matching, and outreach drafts."""
 
 import json
+import os
 import sqlite3
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
 
-DB_PATH = 'data/advocera.db'
+DB_PATH = os.environ.get('DB_PATH', 'data/advocera.db')
 PRACTICE_AREAS = {'personal_injury', 'civil_rights', 'employment_law', 'family_law'}
 ATTORNEY_STATUSES = {'active', 'inactive', 'suspended'}
 URGENCY_LEVELS = {'low', 'medium', 'high'}
@@ -579,7 +580,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             intake_id = str(uuid.uuid4())
-            now = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+            now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
 
             conn = sqlite3.connect(DB_PATH)
             conn.execute('PRAGMA foreign_keys = ON;')
@@ -769,7 +770,7 @@ class Handler(BaseHTTPRequestHandler):
 
             task_status = decision
             draft_status = 'approved' if decision == 'approved' else ('pending_review' if decision == 'changes_requested' else 'failed')
-            decided_at = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+            decided_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
 
             conn = sqlite3.connect(DB_PATH)
             conn.row_factory = sqlite3.Row
