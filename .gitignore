@@ -4,6 +4,34 @@
 # Python
 __pycache__/
 *.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Environment files
+.env
+.env.local
+.env.production
+.env.*
 
 # Local runtime data
 data/
+
+# Node (placeholder package-lock.json; no JS deps)
+node_modules/
+
+# Build artifacts
+build_output.txt
+build_web_output.txt
+dist/
+.next/
+.netlify/
+.vercel/
+
+# IDE
+.vscode/
+.idea/
